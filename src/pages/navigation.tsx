@@ -33,6 +33,7 @@ const Navigation = () => {
   } | null>(null);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [locationWatchId, setLocationWatchId] = useState<number | null>(null);
+  const [routeError, setRouteError] = useState<string | null>(null);
   
   const voiceAssistant = VoiceAssistant.getInstance();
 
@@ -43,42 +44,58 @@ const Navigation = () => {
     const nameParam = searchParams.get("name");
     
     if (fromParam && toParam) {
-      const [fromLat, fromLng] = fromParam.split(",").map(Number);
-      const [toLat, toLng] = toParam.split(",").map(Number);
-      
-      setOrigin([fromLat, fromLng]);
-      setDestination([toLat, toLng]);
-      
-      if (nameParam) {
-        setDestinationName(decodeURIComponent(nameParam));
+      try {
+        const [fromLat, fromLng] = fromParam.split(",").map(Number);
+        const [toLat, toLng] = toParam.split(",").map(Number);
+        
+        if (isNaN(fromLat) || isNaN(fromLng) || isNaN(toLat) || isNaN(toLng)) {
+          throw new Error("Invalid coordinates");
+        }
+        
+        setOrigin([fromLat, fromLng]);
+        setDestination([toLat, toLng]);
+        
+        if (nameParam) {
+          setDestinationName(decodeURIComponent(nameParam));
+        }
+        
+        // Generate route using A* algorithm
+        generateRoute(fromLat, fromLng, toLat, toLng);
+      } catch (error) {
+        console.error("Error parsing route parameters:", error);
+        setRouteError("Invalid route parameters");
+        toast.error("Invalid route parameters");
+        voiceAssistant.speak("Invalid route parameters. Please try again.");
       }
-      
-      // Generate route using A* algorithm
-      generateRoute(fromLat, fromLng, toLat, toLng);
     } else {
+      setRouteError("Missing route parameters");
       toast.error("Missing route parameters");
       voiceAssistant.speak("Missing route parameters. Returning to map.");
-      navigate("/");
+      setTimeout(() => navigate("/"), 3000);
     }
     
     // Start watching user location for real-time navigation
-    const watchId = navigator.geolocation.watchPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        setUserLocation([latitude, longitude]);
-      },
-      (error) => {
-        console.error("Error watching location:", error);
-        toast.error("Could not access your location for navigation");
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
-      }
-    );
-    
-    setLocationWatchId(watchId);
+    try {
+      const watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          setUserLocation([latitude, longitude]);
+        },
+        (error) => {
+          console.error("Error watching location:", error);
+          toast.error("Could not access your location for navigation");
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        }
+      );
+      
+      setLocationWatchId(watchId);
+    } catch (error) {
+      console.error("Error setting up location watching:", error);
+    }
     
     // Cleanup
     return () => {
@@ -91,6 +108,7 @@ const Navigation = () => {
   const generateRoute = async (startLat: number, startLng: number, endLat: number, endLng: number) => {
     try {
       setIsLoading(true);
+      setRouteError(null);
       voiceAssistant.speak("Generating accessible route...");
       
       // Get user preferences from database
@@ -98,27 +116,40 @@ const Navigation = () => {
       let routeProfile = "wheelchair"; // Default profile
       
       if (session?.user?.id) {
-        const userPrefs = await fine.table("userPreferences").select().eq("userId", session.user.id);
-        if (userPrefs && userPrefs.length > 0) {
-          const prefs = userPrefs[0];
-          
-          // Adjust route profile based on user preferences
-          if (prefs.mobilityAid) {
-            routeProfile = "wheelchair";
-          } else if (prefs.visualNeeds) {
-            routeProfile = "foot-with-visual-aids";
-          } else if (prefs.preferredRouteType === "mostAccessible") {
-            routeProfile = "accessible";
-          } else if (prefs.preferredRouteType === "fewestSteps") {
-            routeProfile = "foot-no-steps";
+        try {
+          const userPrefs = await fine.table("userPreferences").select().eq("userId", session.user.id);
+          if (userPrefs && userPrefs.length > 0) {
+            const prefs = userPrefs[0];
+            
+            // Adjust route profile based on user preferences
+            if (prefs.mobilityAid) {
+              routeProfile = "wheelchair";
+            } else if (prefs.visualNeeds) {
+              routeProfile = "foot-with-visual-aids";
+            } else if (prefs.preferredRouteType === "mostAccessible") {
+              routeProfile = "accessible";
+            } else if (prefs.preferredRouteType === "fewestSteps") {
+              routeProfile = "foot-no-steps";
+            }
           }
+        } catch (error) {
+          console.error("Error fetching user preferences:", error);
+          // Continue with default profile
         }
       }
       
       console.log(`Generating route with profile: ${routeProfile}`);
       
-      // Fetch route data
-      const routeData = await fetchRoute(startLat, startLng, endLat, endLng, routeProfile);
+      // Fetch route data with timeout
+      const routePromise = fetchRoute(startLat, startLng, endLat, endLng, routeProfile);
+      
+      // Set up timeout
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Route generation timed out")), 15000);
+      });
+      
+      // Race between route generation and timeout
+      const routeData = await Promise.race([routePromise, timeoutPromise]) as Awaited<ReturnType<typeof fetchRoute>>;
       
       setRoute(routeData.route);
       setRouteDetails({
@@ -130,10 +161,72 @@ const Navigation = () => {
       voiceAssistant.speak("Route generated successfully.");
     } catch (error) {
       console.error("Error generating route:", error);
+      setRouteError(`Failed to generate route: ${error instanceof Error ? error.message : 'Unknown error'}`);
       toast.error("Failed to generate route");
       voiceAssistant.speak("Failed to generate route. Please try again.");
+      
+      // Generate a simple direct route as fallback
+      generateFallbackRoute(startLat, startLng, endLat, endLng);
     } finally {
       setIsLoading(false);
+    }
+  };
+  
+  // Generate a simple direct route when the main route generation fails
+  const generateFallbackRoute = (startLat: number, startLng: number, endLat: number, endLng: number) => {
+    try {
+      // Create a simple straight line route
+      const route: Array<[number, number]> = [];
+      const steps = 10;
+      
+      for (let i = 0; i <= steps; i++) {
+        const ratio = i / steps;
+        const lat = startLat + (endLat - startLat) * ratio;
+        const lng = startLng + (endLng - startLng) * ratio;
+        route.push([lat, lng]);
+      }
+      
+      setRoute(route);
+      
+      // Calculate distance using Haversine formula
+      const R = 6371e3; // Earth's radius in meters
+      const φ1 = startLat * Math.PI / 180;
+      const φ2 = endLat * Math.PI / 180;
+      const Δφ = (endLat - startLat) * Math.PI / 180;
+      const Δλ = (endLng - startLng) * Math.PI / 180;
+      
+      const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+                Math.cos(φ1) * Math.cos(φ2) *
+                Math.sin(Δλ/2) * Math.sin(Δλ/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      const distance = R * c;
+      
+      // Estimate duration (walking speed ~1.4 m/s)
+      const duration = distance / 1.4;
+      
+      setRouteDetails({
+        distance,
+        duration,
+        steps: [
+          {
+            instruction: "Head toward your destination",
+            distance: formatDistance(distance),
+            duration: formatDuration(duration),
+            isAccessible: true
+          },
+          {
+            instruction: "Arrive at your destination",
+            distance: "0 m",
+            duration: "0 min",
+            isAccessible: true
+          }
+        ]
+      });
+      
+      toast.info("Using simplified route");
+      voiceAssistant.speak("Using simplified route. Some accessibility features may not be available.");
+    } catch (error) {
+      console.error("Error generating fallback route:", error);
     }
   };
 
@@ -238,6 +331,13 @@ const Navigation = () => {
     return deg * (Math.PI / 180);
   };
 
+  // Retry route generation
+  const handleRetryRoute = () => {
+    if (origin && destination) {
+      generateRoute(origin[0], origin[1], destination[0], destination[1]);
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen">
       <Header title="Navigation" showBackButton showSearch={false} />
@@ -254,6 +354,30 @@ const Navigation = () => {
             <div className="p-4 flex justify-center items-center">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               <span className="ml-2">Generating accessible route...</span>
+            </div>
+          ) : routeError ? (
+            <div className="p-4 space-y-4">
+              <div className="bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200 p-3 rounded-md">
+                <h3 className="font-medium">Error generating route</h3>
+                <p className="text-sm mt-1">{routeError}</p>
+              </div>
+              
+              <div className="flex space-x-3">
+                <Button 
+                  variant="outline" 
+                  className="flex-1"
+                  onClick={() => navigate("/")}
+                >
+                  Return to Map
+                </Button>
+                
+                <Button 
+                  className="flex-1"
+                  onClick={handleRetryRoute}
+                >
+                  Retry
+                </Button>
+              </div>
             </div>
           ) : isNavigating ? (
             <div className="p-4 space-y-4">

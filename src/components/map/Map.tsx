@@ -47,6 +47,7 @@ export function Map({
   const routeLayerRef = useRef<L.Polyline | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
   const locationWatchId = useRef<number | null>(null);
+  const mapLoadAttempts = useRef(0);
 
   useEffect(() => {
     // Load OpenStreetMap via Leaflet
@@ -56,13 +57,28 @@ export function Map({
         
         // Create map instance
         const map = L.map(mapRef.current, {
-          zoomControl: false // We'll add custom zoom controls
+          zoomControl: false, // We'll add custom zoom controls
+          attributionControl: true,
+          minZoom: 3,
+          maxZoom: 19
         }).setView(center, zoom);
         
-        // Add tile layer
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        // Add tile layer with error handling
+        const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+          errorTileUrl: 'https://via.placeholder.com/256x256?text=Map+Tile+Error'
         }).addTo(map);
+        
+        // Handle tile loading errors
+        tileLayer.on('tileerror', (error) => {
+          console.error("Tile loading error:", error);
+          if (mapLoadAttempts.current < 3) {
+            mapLoadAttempts.current++;
+            setTimeout(() => {
+              tileLayer.redraw();
+            }, 1000);
+          }
+        });
         
         // Store map instance
         mapInstanceRef.current = map;
@@ -77,58 +93,72 @@ export function Map({
           };
           
           // Start watching position for real-time updates
-          locationWatchId.current = navigator.geolocation.watchPosition(
-            (position) => {
-              const { latitude, longitude } = position.coords;
-              const newLocation: [number, number] = [latitude, longitude];
-              setUserLocation(newLocation);
-              
-              // If this is the first location update, center map and load places
-              if (!userLocation) {
-                map.setView(newLocation, 16);
-                loadNearbyPlaces(latitude, longitude);
+          try {
+            locationWatchId.current = navigator.geolocation.watchPosition(
+              (position) => {
+                const { latitude, longitude } = position.coords;
+                const newLocation: [number, number] = [latitude, longitude];
+                setUserLocation(newLocation);
                 
-                // Announce location found
-                voiceAssistant.speak("Location found. Map is ready.");
-              }
-              
-              // Update user marker
-              updateUserLocationMarker(newLocation);
-              
-              // Notify parent component
-              if (onLocationFound) {
-                onLocationFound(newLocation);
-              }
-            },
-            (error) => {
-              console.error("Error watching location:", error);
-              
-              // Try one-time position as fallback
-              navigator.geolocation.getCurrentPosition(
-                (position) => {
-                  const { latitude, longitude } = position.coords;
-                  const newLocation: [number, number] = [latitude, longitude];
-                  setUserLocation(newLocation);
+                // If this is the first location update, center map and load places
+                if (!userLocation) {
                   map.setView(newLocation, 16);
                   loadNearbyPlaces(latitude, longitude);
-                  updateUserLocationMarker(newLocation);
                   
-                  if (onLocationFound) {
-                    onLocationFound(newLocation);
-                  }
-                  
+                  // Announce location found
                   voiceAssistant.speak("Location found. Map is ready.");
-                },
-                (error) => {
-                  console.error("Error getting location:", error);
-                  toast.error("Could not access your location. Please check your location permissions.");
-                  voiceAssistant.speak("Could not access your location. Using default location.");
-                },
-                options
-              );
-            },
-            options
-          );
+                }
+                
+                // Update user marker
+                updateUserLocationMarker(newLocation);
+                
+                // Notify parent component
+                if (onLocationFound) {
+                  onLocationFound(newLocation);
+                }
+              },
+              (error) => {
+                console.error("Error watching location:", error);
+                
+                // Try one-time position as fallback
+                navigator.geolocation.getCurrentPosition(
+                  (position) => {
+                    const { latitude, longitude } = position.coords;
+                    const newLocation: [number, number] = [latitude, longitude];
+                    setUserLocation(newLocation);
+                    map.setView(newLocation, 16);
+                    loadNearbyPlaces(latitude, longitude);
+                    updateUserLocationMarker(newLocation);
+                    
+                    if (onLocationFound) {
+                      onLocationFound(newLocation);
+                    }
+                    
+                    voiceAssistant.speak("Location found. Map is ready.");
+                  },
+                  (error) => {
+                    console.error("Error getting location:", error);
+                    toast.error("Could not access your location. Please check your location permissions.");
+                    voiceAssistant.speak("Could not access your location. Using default location.");
+                    
+                    // Load places at default location
+                    loadNearbyPlaces(center[0], center[1]);
+                  },
+                  options
+                );
+              },
+              options
+            );
+          } catch (error) {
+            console.error("Error setting up geolocation:", error);
+            toast.error("Geolocation not available. Using default location.");
+            
+            // Load places at default location
+            loadNearbyPlaces(center[0], center[1]);
+          }
+        } else {
+          // If not showing user location, just load places at center
+          loadNearbyPlaces(center[0], center[1]);
         }
         
         // Add click handler to map
@@ -141,8 +171,16 @@ export function Map({
         setIsLoading(false);
       } catch (error) {
         console.error("Error loading map:", error);
-        toast.error("Failed to load map");
-        setIsLoading(false);
+        toast.error("Failed to load map. Retrying...");
+        
+        // Retry loading the map
+        if (mapLoadAttempts.current < 3) {
+          mapLoadAttempts.current++;
+          setTimeout(loadMap, 1000);
+        } else {
+          setIsLoading(false);
+          toast.error("Could not load map after multiple attempts. Please refresh the page.");
+        }
       }
     };
     
@@ -256,17 +294,21 @@ export function Map({
         iconSize: [24, 24]
       });
       
-      const marker = L.marker([place.lat, place.lng], { icon, title: place.name })
-        .addTo(map)
-        .on('click', () => {
-          if (onMarkerClick) {
-            onMarkerClick(place.id);
-          } else {
-            navigate(`/place-details/${place.id}`);
-          }
-        });
-        
-      markersRef.current.push(marker);
+      try {
+        const marker = L.marker([place.lat, place.lng], { icon, title: place.name })
+          .addTo(map)
+          .on('click', () => {
+            if (onMarkerClick) {
+              onMarkerClick(place.id);
+            } else {
+              navigate(`/place-details/${place.id}`);
+            }
+          });
+          
+        markersRef.current.push(marker);
+      } catch (error) {
+        console.error(`Error adding marker for place ${place.id}:`, error);
+      }
     });
   };
   
@@ -311,17 +353,21 @@ export function Map({
           iconSize: [24, 24]
         });
         
-        const newMarker = L.marker(marker.position, { icon, title: marker.title })
-          .addTo(map)
-          .on('click', () => {
-            if (onMarkerClick) {
-              onMarkerClick(marker.id);
-            } else {
-              navigate(`/place-details/${marker.id}`);
-            }
-          });
-          
-        markersRef.current.push(newMarker);
+        try {
+          const newMarker = L.marker(marker.position, { icon, title: marker.title })
+            .addTo(map)
+            .on('click', () => {
+              if (onMarkerClick) {
+                onMarkerClick(marker.id);
+              } else {
+                navigate(`/place-details/${marker.id}`);
+              }
+            });
+            
+          markersRef.current.push(newMarker);
+        } catch (error) {
+          console.error(`Error adding marker ${marker.id}:`, error);
+        }
       });
     } catch (error) {
       console.error("Error updating markers:", error);

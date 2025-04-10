@@ -19,6 +19,7 @@ const Index = () => {
   const [places, setPlaces] = useState<Place[]>([]);
   const [showNearby, setShowNearby] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const navigate = useNavigate();
   const voiceAssistant = VoiceAssistant.getInstance();
 
@@ -29,29 +30,54 @@ const Index = () => {
     // Welcome message
     voiceAssistant.speak("Welcome to AccessMap. Your accessible navigation assistant.");
     
-    // Get user location
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        setUserLocation([latitude, longitude]);
-        
-        // Fetch places from Overpass API
-        fetchNearbyPlaces(latitude, longitude);
-      },
-      (error) => {
-        console.error("Error getting location:", error);
-        toast.error("Could not access your location. Please check your location permissions.");
-        voiceAssistant.speak("Could not access your location. Some features may be limited.");
-        
-        // Fallback to database
-        fetchPlacesFromDatabase();
-      },
-      {
+    // Get user location with multiple attempts
+    const getLocation = (attempt = 1) => {
+      const maxAttempts = 3;
+      
+      // Request high accuracy location
+      const options = {
         enableHighAccuracy: true,
         timeout: 10000,
         maximumAge: 0
-      }
-    );
+      };
+      
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          console.log(`Location found: [${latitude}, ${longitude}]`);
+          setUserLocation([latitude, longitude]);
+          
+          // Fetch places from Overpass API
+          fetchNearbyPlaces(latitude, longitude);
+        },
+        (error) => {
+          console.error(`Error getting location (attempt ${attempt}/${maxAttempts}):`, error);
+          
+          if (attempt < maxAttempts) {
+            // Retry with a delay
+            setTimeout(() => getLocation(attempt + 1), 1000);
+          } else {
+            // All attempts failed
+            setLocationError(`Could not access your location: ${error.message}`);
+            toast.error("Could not access your location. Please check your location permissions.");
+            voiceAssistant.speak("Could not access your location. Some features may be limited.");
+            
+            // Fallback to database or default location
+            fetchPlacesFromDatabase();
+          }
+        },
+        options
+      );
+    };
+    
+    // Start location detection
+    getLocation();
+    
+    // Cleanup
+    return () => {
+      // Cancel any pending speech
+      voiceAssistant.cancelSpeech();
+    };
   }, []);
 
   const fetchNearbyPlaces = async (latitude: number, longitude: number) => {
@@ -265,6 +291,34 @@ const Index = () => {
           onPlacesLoaded={handlePlacesLoaded}
           onLocationFound={handleLocationFound}
         />
+        
+        {locationError && (
+          <div className="absolute top-28 left-0 right-0 mx-4 bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200 p-2 rounded-md text-sm">
+            {locationError}
+            <Button 
+              variant="link" 
+              size="sm" 
+              className="ml-2 p-0 h-auto text-red-600 dark:text-red-300"
+              onClick={() => {
+                // Retry location detection
+                setLocationError(null);
+                navigator.geolocation.getCurrentPosition(
+                  (position) => {
+                    const { latitude, longitude } = position.coords;
+                    setUserLocation([latitude, longitude]);
+                    fetchNearbyPlaces(latitude, longitude);
+                  },
+                  (error) => {
+                    setLocationError(`Could not access your location: ${error.message}`);
+                    toast.error("Could not access your location. Using default location.");
+                  }
+                );
+              }}
+            >
+              Retry
+            </Button>
+          </div>
+        )}
         
         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex space-x-2">
           <Button 

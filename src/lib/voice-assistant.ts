@@ -44,6 +44,7 @@ export class VoiceAssistant {
   };
   private commandCallbacks: Map<string, (args?: string) => void> = new Map();
   private currentUtterance: SpeechSynthesisUtterance | null = null;
+  private recognitionTimeout: NodeJS.Timeout | null = null;
 
   private constructor() {
     if (typeof window !== 'undefined') {
@@ -52,33 +53,61 @@ export class VoiceAssistant {
       // Initialize speech recognition
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SpeechRecognition) {
-        this.recognition = new SpeechRecognition();
-        this.recognition.continuous = false;
-        this.recognition.interimResults = false;
-        this.recognition.lang = 'en-US';
-        
-        this.recognition.onresult = (event: any) => {
-          const transcript = event.results[0][0].transcript.toLowerCase().trim();
-          console.log("Voice command received:", transcript);
-          this.processCommand(transcript);
-        };
-        
-        this.recognition.onerror = (event: any) => {
-          console.error('Speech recognition error:', event.error);
-        };
-        
-        this.recognition.onend = () => {
-          if (this.isListening) {
-            // Restart recognition if it's supposed to be listening
-            setTimeout(() => {
-              try {
-                this.recognition?.start();
-              } catch (error) {
-                console.error("Error restarting speech recognition:", error);
-              }
-            }, 500);
-          }
-        };
+        try {
+          this.recognition = new SpeechRecognition();
+          this.recognition.continuous = false;
+          this.recognition.interimResults = false;
+          this.recognition.lang = 'en-US';
+          
+          this.recognition.onresult = (event: any) => {
+            try {
+              const transcript = event.results[0][0].transcript.toLowerCase().trim();
+              console.log("Voice command received:", transcript);
+              this.processCommand(transcript);
+            } catch (error) {
+              console.error("Error processing speech recognition result:", error);
+            }
+          };
+          
+          this.recognition.onerror = (event: any) => {
+            console.error('Speech recognition error:', event.error);
+            // Clear timeout if there was an error
+            if (this.recognitionTimeout) {
+              clearTimeout(this.recognitionTimeout);
+              this.recognitionTimeout = null;
+            }
+          };
+          
+          this.recognition.onend = () => {
+            // Clear timeout when recognition ends naturally
+            if (this.recognitionTimeout) {
+              clearTimeout(this.recognitionTimeout);
+              this.recognitionTimeout = null;
+            }
+            
+            if (this.isListening) {
+              // Restart recognition if it's supposed to be listening
+              setTimeout(() => {
+                try {
+                  this.recognition?.start();
+                  
+                  // Set a timeout to stop recognition if it doesn't end naturally
+                  this.recognitionTimeout = setTimeout(() => {
+                    try {
+                      this.recognition?.stop();
+                    } catch (error) {
+                      console.error("Error stopping timed out recognition:", error);
+                    }
+                  }, 10000); // 10 second timeout
+                } catch (error) {
+                  console.error("Error restarting speech recognition:", error);
+                }
+              }, 500);
+            }
+          };
+        } catch (error) {
+          console.error("Error initializing speech recognition:", error);
+        }
       } else {
         console.warn("Speech recognition not supported in this browser");
       }
@@ -107,27 +136,31 @@ export class VoiceAssistant {
       this.synthesis.cancel();
     }
     
-    // Create new utterance
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = this.options.rate || 1;
-    utterance.pitch = this.options.pitch || 1;
-    utterance.volume = this.options.volume || 1;
-    
-    // Set voice if specified
-    if (this.options.voice) {
-      const voices = this.synthesis.getVoices();
-      const selectedVoice = voices.find(voice => voice.name === this.options.voice);
-      if (selectedVoice) {
-        utterance.voice = selectedVoice;
+    try {
+      // Create new utterance
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = this.options.rate || 1;
+      utterance.pitch = this.options.pitch || 1;
+      utterance.volume = this.options.volume || 1;
+      
+      // Set voice if specified
+      if (this.options.voice) {
+        const voices = this.synthesis.getVoices();
+        const selectedVoice = voices.find(voice => voice.name === this.options.voice);
+        if (selectedVoice) {
+          utterance.voice = selectedVoice;
+        }
       }
+      
+      // Store current utterance for potential cancellation
+      this.currentUtterance = utterance;
+      
+      // Speak the text
+      console.log("Speaking:", text);
+      this.synthesis.speak(utterance);
+    } catch (error) {
+      console.error("Error speaking text:", error);
     }
-    
-    // Store current utterance for potential cancellation
-    this.currentUtterance = utterance;
-    
-    // Speak the text
-    console.log("Speaking:", text);
-    this.synthesis.speak(utterance);
   }
 
   public startListening(): boolean {
@@ -140,6 +173,16 @@ export class VoiceAssistant {
       console.log("Starting speech recognition");
       this.recognition.start();
       this.isListening = true;
+      
+      // Set a timeout to stop recognition if it doesn't end naturally
+      this.recognitionTimeout = setTimeout(() => {
+        try {
+          this.recognition?.stop();
+        } catch (error) {
+          console.error("Error stopping timed out recognition:", error);
+        }
+      }, 10000); // 10 second timeout
+      
       return true;
     } catch (error) {
       console.error('Failed to start speech recognition:', error);
@@ -154,6 +197,12 @@ export class VoiceAssistant {
       console.log("Stopping speech recognition");
       this.recognition.stop();
       this.isListening = false;
+      
+      // Clear timeout when manually stopping
+      if (this.recognitionTimeout) {
+        clearTimeout(this.recognitionTimeout);
+        this.recognitionTimeout = null;
+      }
     } catch (error) {
       console.error('Failed to stop speech recognition:', error);
     }
