@@ -34,6 +34,7 @@ const Navigation = () => {
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [locationWatchId, setLocationWatchId] = useState<number | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
+  const [routeGenerationAttempts, setRouteGenerationAttempts] = useState(0);
   
   const voiceAssistant = VoiceAssistant.getInstance();
 
@@ -140,10 +141,8 @@ const Navigation = () => {
       
       console.log(`Generating route with profile: ${routeProfile}`);
       
-      // Fetch route data with timeout
+      // Add timeout to prevent hanging requests
       const routePromise = fetchRoute(startLat, startLng, endLat, endLng, routeProfile);
-      
-      // Set up timeout
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error("Route generation timed out")), 15000);
       });
@@ -163,10 +162,13 @@ const Navigation = () => {
       console.error("Error generating route:", error);
       setRouteError(`Failed to generate route: ${error instanceof Error ? error.message : 'Unknown error'}`);
       toast.error("Failed to generate route");
-      voiceAssistant.speak("Failed to generate route. Please try again.");
+      voiceAssistant.speak("Failed to generate route. Using simplified route instead.");
       
       // Generate a simple direct route as fallback
       generateFallbackRoute(startLat, startLng, endLat, endLng);
+      
+      // Increment attempt counter
+      setRouteGenerationAttempts(prev => prev + 1);
     } finally {
       setIsLoading(false);
     }
@@ -227,6 +229,7 @@ const Navigation = () => {
       voiceAssistant.speak("Using simplified route. Some accessibility features may not be available.");
     } catch (error) {
       console.error("Error generating fallback route:", error);
+      setRouteError("Could not generate any route. Please try again.");
     }
   };
 
@@ -355,7 +358,7 @@ const Navigation = () => {
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               <span className="ml-2">Generating accessible route...</span>
             </div>
-          ) : routeError ? (
+          ) : routeError && routeGenerationAttempts > 1 ? (
             <div className="p-4 space-y-4">
               <div className="bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200 p-3 rounded-md">
                 <h3 className="font-medium">Error generating route</h3>

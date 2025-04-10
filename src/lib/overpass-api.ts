@@ -102,65 +102,70 @@ export async function fetchAccessiblePlaces(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
     
-    const response = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      body: query,
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    });
-    
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`Overpass API error: ${response.statusText}`);
-    }
-
-    const data: OverpassResponse = await response.json();
-    console.log(`Received ${data.elements.length} elements from Overpass API`);
-    
-    // Transform Overpass data to our Place format
-    return data.elements
-      .filter(element => element.tags && (element.lat !== undefined && element.lon !== undefined))
-      .map(element => {
-        const tags = element.tags || {};
-        
-        // Extract accessibility features
-        const accessibilityFeatures: string[] = [];
-        if (tags.wheelchair === 'yes') accessibilityFeatures.push('Wheelchair Access');
-        if (tags.wheelchair === 'limited') accessibilityFeatures.push('Limited Wheelchair Access');
-        if (tags.wheelchair_toilet === 'yes') accessibilityFeatures.push('Accessible Washroom');
-        if (tags.tactile_paving === 'yes') accessibilityFeatures.push('Tactile Paving');
-        if (tags.handrail === 'yes') accessibilityFeatures.push('Handrails');
-        if (tags.ramp === 'yes') accessibilityFeatures.push('Ramp');
-        if (tags.elevator === 'yes') accessibilityFeatures.push('Elevator');
-        
-        // Determine place type
-        let placeType = 'other';
-        if (tags.amenity === 'restaurant' || tags.amenity === 'cafe') placeType = 'restaurant';
-        else if (tags.amenity === 'hospital' || tags.amenity === 'clinic' || tags.amenity === 'doctors') placeType = 'hospital';
-        else if (tags.amenity === 'school' || tags.amenity === 'university' || tags.amenity === 'college') placeType = 'education';
-        else if (tags.amenity === 'bus_station' || tags.amenity === 'train_station') placeType = 'transport';
-        else if (tags.shop) placeType = 'shopping';
-        
-        // Create place object
-        return {
-          id: element.id,
-          name: tags.name || `Place ${element.id}`,
-          lat: element.lat!,
-          lng: element.lon!,
-          address: tags.addr_street ? 
-            `${tags.addr_housenumber || ''} ${tags.addr_street}, ${tags.addr_city || ''}`.trim() : 
-            'Address not available',
-          placeType,
-          accessibilityFeatures,
-          phone: tags.phone,
-          website: tags.website,
-          // Default rating based on wheelchair accessibility
-          rating: tags.wheelchair === 'yes' ? 4.5 : tags.wheelchair === 'limited' ? 3.5 : undefined
-        };
+    try {
+      const response = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        body: query,
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
       });
+      
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`Overpass API error: ${response.statusText}`);
+      }
+
+      const data: OverpassResponse = await response.json();
+      console.log(`Received ${data.elements.length} elements from Overpass API`);
+      
+      // Transform Overpass data to our Place format
+      return data.elements
+        .filter(element => element.tags && (element.lat !== undefined && element.lon !== undefined))
+        .map(element => {
+          const tags = element.tags || {};
+          
+          // Extract accessibility features
+          const accessibilityFeatures: string[] = [];
+          if (tags.wheelchair === 'yes') accessibilityFeatures.push('Wheelchair Access');
+          if (tags.wheelchair === 'limited') accessibilityFeatures.push('Limited Wheelchair Access');
+          if (tags.wheelchair_toilet === 'yes') accessibilityFeatures.push('Accessible Washroom');
+          if (tags.tactile_paving === 'yes') accessibilityFeatures.push('Tactile Paving');
+          if (tags.handrail === 'yes') accessibilityFeatures.push('Handrails');
+          if (tags.ramp === 'yes') accessibilityFeatures.push('Ramp');
+          if (tags.elevator === 'yes') accessibilityFeatures.push('Elevator');
+          
+          // Determine place type
+          let placeType = 'other';
+          if (tags.amenity === 'restaurant' || tags.amenity === 'cafe') placeType = 'restaurant';
+          else if (tags.amenity === 'hospital' || tags.amenity === 'clinic' || tags.amenity === 'doctors') placeType = 'hospital';
+          else if (tags.amenity === 'school' || tags.amenity === 'university' || tags.amenity === 'college') placeType = 'education';
+          else if (tags.amenity === 'bus_station' || tags.amenity === 'train_station') placeType = 'transport';
+          else if (tags.shop) placeType = 'shopping';
+          
+          // Create place object
+          return {
+            id: element.id,
+            name: tags.name || `Place ${element.id}`,
+            lat: element.lat!,
+            lng: element.lon!,
+            address: tags.addr_street ? 
+              `${tags.addr_housenumber || ''} ${tags.addr_street}, ${tags.addr_city || ''}`.trim() : 
+              'Address not available',
+            placeType,
+            accessibilityFeatures,
+            phone: tags.phone,
+            website: tags.website,
+            // Default rating based on wheelchair accessibility
+            rating: tags.wheelchair === 'yes' ? 4.5 : tags.wheelchair === 'limited' ? 3.5 : undefined
+          };
+        });
+    } catch (fetchError) {
+      console.error('Error fetching from Overpass API:', fetchError);
+      throw fetchError;
+    }
   } catch (error) {
     console.error('Error fetching from Overpass API:', error);
     
@@ -204,6 +209,26 @@ function getFallbackPlaces(lat: number, lng: number): Place[] {
       placeType: "education",
       accessibilityFeatures: ["Ramp", "Elevator", "Tactile Paving"],
       rating: 4.0
+    },
+    {
+      id: 1004,
+      name: "Accessible Shopping Mall",
+      lat: lat - 0.002,
+      lng: lng - 0.002,
+      address: "101 Retail Boulevard",
+      placeType: "shopping",
+      accessibilityFeatures: ["Wheelchair Access", "Elevator", "Accessible Washroom"],
+      rating: 4.3
+    },
+    {
+      id: 1005,
+      name: "Central Transit Hub",
+      lat: lat + 0.001,
+      lng: lng + 0.001,
+      address: "202 Transport Street",
+      placeType: "transport",
+      accessibilityFeatures: ["Ramp", "Elevator", "Tactile Paving", "Wheelchair Access"],
+      rating: 3.9
     }
   ];
 }
@@ -235,62 +260,67 @@ export async function searchPlaces(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
 
-    const response = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      body: overpassQuery,
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    });
-    
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`Overpass API error: ${response.statusText}`);
-    }
-
-    const data: OverpassResponse = await response.json();
-    
-    // Transform Overpass data to our Place format
-    return data.elements
-      .filter(element => element.tags && (element.lat !== undefined && element.lon !== undefined))
-      .map(element => {
-        const tags = element.tags || {};
-        
-        // Extract accessibility features
-        const accessibilityFeatures: string[] = [];
-        if (tags.wheelchair === 'yes') accessibilityFeatures.push('Wheelchair Access');
-        if (tags.wheelchair === 'limited') accessibilityFeatures.push('Limited Wheelchair Access');
-        if (tags.wheelchair_toilet === 'yes') accessibilityFeatures.push('Accessible Washroom');
-        if (tags.tactile_paving === 'yes') accessibilityFeatures.push('Tactile Paving');
-        if (tags.handrail === 'yes') accessibilityFeatures.push('Handrails');
-        if (tags.ramp === 'yes') accessibilityFeatures.push('Ramp');
-        if (tags.elevator === 'yes') accessibilityFeatures.push('Elevator');
-        
-        // Determine place type
-        let placeType = 'other';
-        if (tags.amenity === 'restaurant' || tags.amenity === 'cafe') placeType = 'restaurant';
-        else if (tags.amenity === 'hospital' || tags.amenity === 'clinic' || tags.amenity === 'doctors') placeType = 'hospital';
-        else if (tags.amenity === 'school' || tags.amenity === 'university' || tags.amenity === 'college') placeType = 'education';
-        else if (tags.amenity === 'bus_station' || tags.amenity === 'train_station') placeType = 'transport';
-        else if (tags.shop) placeType = 'shopping';
-        
-        return {
-          id: element.id,
-          name: tags.name || `Place ${element.id}`,
-          lat: element.lat!,
-          lng: element.lon!,
-          address: tags.addr_street ? 
-            `${tags.addr_housenumber || ''} ${tags.addr_street}, ${tags.addr_city || ''}`.trim() : 
-            'Address not available',
-          placeType,
-          accessibilityFeatures,
-          phone: tags.phone,
-          website: tags.website,
-          rating: tags.wheelchair === 'yes' ? 4.5 : tags.wheelchair === 'limited' ? 3.5 : undefined
-        };
+    try {
+      const response = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        body: overpassQuery,
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
       });
+      
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`Overpass API error: ${response.statusText}`);
+      }
+
+      const data: OverpassResponse = await response.json();
+      
+      // Transform Overpass data to our Place format
+      return data.elements
+        .filter(element => element.tags && (element.lat !== undefined && element.lon !== undefined))
+        .map(element => {
+          const tags = element.tags || {};
+          
+          // Extract accessibility features
+          const accessibilityFeatures: string[] = [];
+          if (tags.wheelchair === 'yes') accessibilityFeatures.push('Wheelchair Access');
+          if (tags.wheelchair === 'limited') accessibilityFeatures.push('Limited Wheelchair Access');
+          if (tags.wheelchair_toilet === 'yes') accessibilityFeatures.push('Accessible Washroom');
+          if (tags.tactile_paving === 'yes') accessibilityFeatures.push('Tactile Paving');
+          if (tags.handrail === 'yes') accessibilityFeatures.push('Handrails');
+          if (tags.ramp === 'yes') accessibilityFeatures.push('Ramp');
+          if (tags.elevator === 'yes') accessibilityFeatures.push('Elevator');
+          
+          // Determine place type
+          let placeType = 'other';
+          if (tags.amenity === 'restaurant' || tags.amenity === 'cafe') placeType = 'restaurant';
+          else if (tags.amenity === 'hospital' || tags.amenity === 'clinic' || tags.amenity === 'doctors') placeType = 'hospital';
+          else if (tags.amenity === 'school' || tags.amenity === 'university' || tags.amenity === 'college') placeType = 'education';
+          else if (tags.amenity === 'bus_station' || tags.amenity === 'train_station') placeType = 'transport';
+          else if (tags.shop) placeType = 'shopping';
+          
+          return {
+            id: element.id,
+            name: tags.name || `Place ${element.id}`,
+            lat: element.lat!,
+            lng: element.lon!,
+            address: tags.addr_street ? 
+              `${tags.addr_housenumber || ''} ${tags.addr_street}, ${tags.addr_city || ''}`.trim() : 
+              'Address not available',
+            placeType,
+            accessibilityFeatures,
+            phone: tags.phone,
+            website: tags.website,
+            rating: tags.wheelchair === 'yes' ? 4.5 : tags.wheelchair === 'limited' ? 3.5 : undefined
+          };
+        });
+    } catch (fetchError) {
+      console.error('Error searching places:', fetchError);
+      throw fetchError;
+    }
   } catch (error) {
     console.error('Error searching places:', error);
     
