@@ -74,7 +74,7 @@ export async function fetchAccessiblePlaces(
   try {
     // Query for places with accessibility tags
     const query = `
-      [out:json][timeout:25];
+      [out:json][timeout:60];
       (
         node["wheelchair"="yes"](around:${radius},${lat},${lng});
         node["wheelchair"="limited"](around:${radius},${lat},${lng});
@@ -100,22 +100,34 @@ export async function fetchAccessiblePlaces(
     
     // Add timeout and abort controller for better error handling
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+    const signal = controller.signal;
+    
+    // Set a longer timeout (30 seconds)
+    const timeoutId = setTimeout(() => {
+      console.log("Overpass API request timed out after 30 seconds");
+      controller.abort();
+    }, 30000);
     
     try {
+      // Use a more robust fetch approach
       const response = await fetch('https://overpass-api.de/api/interpreter', {
         method: 'POST',
         body: query,
-        signal: controller.signal,
+        signal,
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        },
+        // Increase timeout and disable cache to avoid stale responses
+        cache: 'no-store',
+        credentials: 'omit' // Don't send cookies
       });
       
+      // Clear the timeout since we got a response
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        throw new Error(`Overpass API error: ${response.statusText}`);
+        throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
       }
 
       const data: OverpassResponse = await response.json();
@@ -162,14 +174,23 @@ export async function fetchAccessiblePlaces(
             rating: tags.wheelchair === 'yes' ? 4.5 : tags.wheelchair === 'limited' ? 3.5 : undefined
           };
         });
-    } catch (fetchError) {
+    } catch (fetchError: any) {
+      // Check if this is an abort error
+      if (fetchError.name === 'AbortError') {
+        console.error('Overpass API request was aborted:', fetchError);
+        throw new Error('Overpass API request timed out. Please try again later.');
+      }
+      
+      // Clear the timeout if there was another type of error
+      clearTimeout(timeoutId);
       console.error('Error fetching from Overpass API:', fetchError);
       throw fetchError;
     }
   } catch (error) {
-    console.error('Error fetching from Overpass API:', error);
+    console.error('Error in fetchAccessiblePlaces:', error);
     
     // Fallback to sample data if API fails
+    console.log("Using fallback places data");
     return getFallbackPlaces(lat, lng);
   }
 }
@@ -245,7 +266,7 @@ export async function searchPlaces(
   try {
     // Query for places matching the search term
     const overpassQuery = `
-      [out:json][timeout:25];
+      [out:json][timeout:60];
       (
         node["name"~"${query}", i](around:${radius},${lat},${lng});
         way["name"~"${query}", i](around:${radius},${lat},${lng});
@@ -258,22 +279,32 @@ export async function searchPlaces(
 
     // Add timeout and abort controller for better error handling
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+    const signal = controller.signal;
+    
+    // Set a longer timeout (30 seconds)
+    const timeoutId = setTimeout(() => {
+      console.log("Search request timed out after 30 seconds");
+      controller.abort();
+    }, 30000);
 
     try {
       const response = await fetch('https://overpass-api.de/api/interpreter', {
         method: 'POST',
         body: overpassQuery,
-        signal: controller.signal,
+        signal,
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        },
+        cache: 'no-store',
+        credentials: 'omit'
       });
       
+      // Clear the timeout since we got a response
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        throw new Error(`Overpass API error: ${response.statusText}`);
+        throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
       }
 
       const data: OverpassResponse = await response.json();
@@ -317,12 +348,20 @@ export async function searchPlaces(
             rating: tags.wheelchair === 'yes' ? 4.5 : tags.wheelchair === 'limited' ? 3.5 : undefined
           };
         });
-    } catch (fetchError) {
+    } catch (fetchError: any) {
+      // Check if this is an abort error
+      if (fetchError.name === 'AbortError') {
+        console.error('Search request was aborted:', fetchError);
+        throw new Error('Search request timed out. Please try again later.');
+      }
+      
+      // Clear the timeout if there was another type of error
+      clearTimeout(timeoutId);
       console.error('Error searching places:', fetchError);
       throw fetchError;
     }
   } catch (error) {
-    console.error('Error searching places:', error);
+    console.error('Error in searchPlaces:', error);
     
     // Return fallback search results
     return getFallbackSearchResults(query, lat, lng);
@@ -428,7 +467,10 @@ export async function fetchRoute(
     try {
       // Add timeout and abort controller for better error handling
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      const timeoutId = setTimeout(() => {
+        console.log("Waypoints request timed out after 20 seconds");
+        controller.abort();
+      }, 20000);
       
       accessiblePlaces = await fetchAccessiblePlaces(midLat, midLng, radius * 1000);
       clearTimeout(timeoutId);

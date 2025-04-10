@@ -29,6 +29,7 @@ export function NearbyPlaces({
   const [loadError, setLoadError] = useState<string | null>(null);
   const voiceAssistant = VoiceAssistant.getInstance();
   const loadAttempts = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     // If places are provided as props, use them
@@ -45,17 +46,19 @@ export function NearbyPlaces({
         setIsLoading(true);
         setLoadError(null);
         
+        // Cancel any previous requests
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+        }
+        
+        // Create a new abort controller for this request
+        abortControllerRef.current = new AbortController();
+        
         if (userLocation) {
           console.log(`NearbyPlaces: Fetching places near [${userLocation[0]}, ${userLocation[1]}]`);
           
-          // Add timeout to prevent hanging requests
-          const fetchPromise = fetchAccessiblePlaces(userLocation[0], userLocation[1], 2000);
-          const timeoutPromise = new Promise<Place[]>((_, reject) => {
-            setTimeout(() => reject(new Error("Request timed out")), 10000);
-          });
-          
-          // Race between fetch and timeout
-          const fetchedPlaces = await Promise.race([fetchPromise, timeoutPromise]);
+          // Fetch places with a longer timeout
+          const fetchedPlaces = await fetchAccessiblePlaces(userLocation[0], userLocation[1], 2000);
           
           if (fetchedPlaces.length > 0) {
             console.log(`NearbyPlaces: Found ${fetchedPlaces.length} places from Overpass API`);
@@ -92,18 +95,22 @@ export function NearbyPlaces({
           // If no user location, just fetch from database
           fetchPlacesFromDatabase();
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error("Error fetching places from Overpass API:", error);
-        setLoadError("Failed to load nearby places");
         
-        // Retry with fallback data if we've had multiple failures
-        if (loadAttempts.current < 2) {
-          loadAttempts.current++;
-          // Fallback to database
-          fetchPlacesFromDatabase();
-        } else {
-          // Use sample data as last resort
-          useSampleData();
+        // Only show error if it's not an abort error
+        if (error.name !== 'AbortError') {
+          setLoadError("Failed to load nearby places");
+          
+          // Retry with fallback data if we've had multiple failures
+          if (loadAttempts.current < 2) {
+            loadAttempts.current++;
+            // Fallback to database
+            fetchPlacesFromDatabase();
+          } else {
+            // Use sample data as last resort
+            useSampleData();
+          }
         }
       } finally {
         setIsLoading(false);
@@ -245,6 +252,13 @@ export function NearbyPlaces({
     };
     
     fetchNearbyPlaces();
+    
+    // Cleanup function to abort any pending requests
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, [userLocation, initialPlaces]);
   
   // Filter places when tab changes

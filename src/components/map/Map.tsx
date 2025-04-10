@@ -49,6 +49,7 @@ export function Map({
   const locationWatchId = useRef<number | null>(null);
   const mapLoadAttempts = useRef(0);
   const placesLoadAttempts = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     // Load OpenStreetMap via Leaflet
@@ -198,6 +199,11 @@ export function Map({
       if (locationWatchId.current !== null) {
         navigator.geolocation.clearWatch(locationWatchId.current);
       }
+      
+      // Abort any pending API requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
   
@@ -232,14 +238,16 @@ export function Map({
     try {
       setLoadingPlaces(true);
       
-      // Add timeout to prevent hanging requests
-      const fetchPromise = fetchAccessiblePlaces(lat, lng, 2000);
-      const timeoutPromise = new Promise<Place[]>((_, reject) => {
-        setTimeout(() => reject(new Error("Request timed out")), 10000);
-      });
+      // Cancel any previous requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
       
-      // Race between fetch and timeout
-      const places = await Promise.race([fetchPromise, timeoutPromise]);
+      // Create a new abort controller for this request
+      abortControllerRef.current = new AbortController();
+      
+      // Fetch places with a longer timeout
+      const places = await fetchAccessiblePlaces(lat, lng, 2000);
       
       if (places.length > 0) {
         // Add markers for places
@@ -256,27 +264,31 @@ export function Map({
         toast.info("No accessible places found nearby");
         voiceAssistant.speak("No accessible places found nearby");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error loading nearby places:", error);
-      toast.error("Failed to load nearby places");
       
-      // Retry with fallback data if we've had multiple failures
-      if (placesLoadAttempts.current < 2) {
-        placesLoadAttempts.current++;
+      // Only show error if it's not an abort error
+      if (error.name !== 'AbortError') {
+        toast.error("Failed to load nearby places");
         
-        // Use fallback data
-        const fallbackPlaces = getFallbackPlaces(lat, lng);
-        
-        // Add markers for fallback places
-        addPlaceMarkers(fallbackPlaces);
-        
-        // Pass fallback places to parent component
-        if (onPlacesLoaded) {
-          onPlacesLoaded(fallbackPlaces);
+        // Retry with fallback data if we've had multiple failures
+        if (placesLoadAttempts.current < 2) {
+          placesLoadAttempts.current++;
+          
+          // Use fallback data
+          const fallbackPlaces = getFallbackPlaces(lat, lng);
+          
+          // Add markers for fallback places
+          addPlaceMarkers(fallbackPlaces);
+          
+          // Pass fallback places to parent component
+          if (onPlacesLoaded) {
+            onPlacesLoaded(fallbackPlaces);
+          }
+          
+          toast.info(`Using sample data: ${fallbackPlaces.length} accessible places`);
+          voiceAssistant.speak(`Found ${fallbackPlaces.length} accessible places nearby`);
         }
-        
-        toast.info(`Using sample data: ${fallbackPlaces.length} accessible places`);
-        voiceAssistant.speak(`Found ${fallbackPlaces.length} accessible places nearby`);
       }
     } finally {
       setLoadingPlaces(false);
