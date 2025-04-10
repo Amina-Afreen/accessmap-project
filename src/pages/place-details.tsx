@@ -37,6 +37,12 @@ const PlaceDetails = () => {
       },
       (error) => {
         console.error("Error getting location:", error);
+        toast.error("Could not access your location. Some navigation features may be limited.");
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
       }
     );
 
@@ -46,9 +52,11 @@ const PlaceDetails = () => {
       
       try {
         setIsLoading(true);
+        console.log(`Fetching place details for ID: ${id}`);
         const place = await fine.table("places").select().eq("id", parseInt(id));
         
         if (place && place.length > 0) {
+          console.log("Place details found:", place[0]);
           setPlace(place[0]);
           
           // Announce place details
@@ -57,6 +65,7 @@ const PlaceDetails = () => {
             `${place[0].name}. ${accessibilityFeatures.length} accessibility features including ${accessibilityFeatures.slice(0, 3).join(', ')}`
           );
         } else {
+          console.error("Place not found");
           toast.error("Place not found");
           voiceAssistant.speak("Place not found");
           navigate("/");
@@ -76,9 +85,11 @@ const PlaceDetails = () => {
   const handleShowDirections = () => {
     if (!place || !userLocation) {
       toast.error("Unable to get your location. Please enable location services.");
+      voiceAssistant.speak("Unable to get your location. Please enable location services.");
       return;
     }
     
+    console.log(`Navigating to ${place.name} at [${place.lat}, ${place.lng}]`);
     voiceAssistant.speak(`Showing directions to ${place.name}`);
     navigate(`/navigation?from=${userLocation[0]},${userLocation[1]}&to=${place.lat},${place.lng}&name=${encodeURIComponent(place.name)}`);
   };

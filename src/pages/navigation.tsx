@@ -31,6 +31,8 @@ const Navigation = () => {
       isAccessible: boolean;
     }>;
   } | null>(null);
+  const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
+  const [locationWatchId, setLocationWatchId] = useState<number | null>(null);
   
   const voiceAssistant = VoiceAssistant.getInstance();
 
@@ -58,6 +60,32 @@ const Navigation = () => {
       voiceAssistant.speak("Missing route parameters. Returning to map.");
       navigate("/");
     }
+    
+    // Start watching user location for real-time navigation
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        setUserLocation([latitude, longitude]);
+      },
+      (error) => {
+        console.error("Error watching location:", error);
+        toast.error("Could not access your location for navigation");
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      }
+    );
+    
+    setLocationWatchId(watchId);
+    
+    // Cleanup
+    return () => {
+      if (locationWatchId !== null) {
+        navigator.geolocation.clearWatch(locationWatchId);
+      }
+    };
   }, [searchParams, navigate]);
 
   const generateRoute = async (startLat: number, startLng: number, endLat: number, endLng: number) => {
@@ -86,6 +114,8 @@ const Navigation = () => {
           }
         }
       }
+      
+      console.log(`Generating route with profile: ${routeProfile}`);
       
       // Fetch route data
       const routeData = await fetchRoute(startLat, startLng, endLat, endLng, routeProfile);
@@ -162,13 +192,59 @@ const Navigation = () => {
     }
   };
 
+  // Check if user is near a waypoint
+  useEffect(() => {
+    if (!isNavigating || !userLocation || !route.length) return;
+    
+    // Check distance to next waypoint
+    const nextWaypointIndex = Math.min(currentStep + 1, route.length - 1);
+    const nextWaypoint = route[nextWaypointIndex];
+    
+    const distance = calculateDistance(
+      userLocation[0],
+      userLocation[1],
+      nextWaypoint[0],
+      nextWaypoint[1]
+    );
+    
+    // If within 20 meters of next waypoint, advance to next step
+    if (distance < 0.02) {
+      if (currentStep < (routeDetails?.steps.length || 0) - 1) {
+        setCurrentStep(currentStep + 1);
+        
+        // Announce next instruction
+        if (routeDetails?.steps[currentStep + 1]) {
+          voiceAssistant.speak(routeDetails.steps[currentStep + 1].instruction);
+        }
+      }
+    }
+  }, [userLocation, isNavigating, route]);
+
+  // Calculate distance between two points in km
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371; // Radius of the earth in km
+    const dLat = deg2rad(lat2 - lat1);
+    const dLon = deg2rad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const d = R * c; // Distance in km
+    return d;
+  };
+  
+  const deg2rad = (deg: number): number => {
+    return deg * (Math.PI / 180);
+  };
+
   return (
     <div className="flex flex-col h-screen">
       <Header title="Navigation" showBackButton showSearch={false} />
       
       <main className="flex-1 pt-14 pb-0 relative">
         <Map
-          center={origin || undefined}
+          center={userLocation || origin || undefined}
           route={route}
           showUserLocation={true}
         />

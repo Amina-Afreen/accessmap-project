@@ -96,6 +96,7 @@ export async function fetchAccessiblePlaces(
       out skel qt;
     `;
 
+    console.log("Fetching from Overpass API...");
     const response = await fetch('https://overpass-api.de/api/interpreter', {
       method: 'POST',
       body: query,
@@ -106,6 +107,7 @@ export async function fetchAccessiblePlaces(
     }
 
     const data: OverpassResponse = await response.json();
+    console.log(`Received ${data.elements.length} elements from Overpass API`);
     
     // Transform Overpass data to our Place format
     return data.elements
@@ -254,22 +256,25 @@ export async function fetchRoute(
   }>;
 }> {
   try {
-    // In a real app, we would use OSRM or a similar service
-    // For now, we'll implement a simplified A* algorithm with accessibility considerations
+    console.log(`Generating route from [${startLat},${startLng}] to [${endLat},${endLng}]`);
     
     // First, try to fetch accessible waypoints between start and end
     const midLat = (startLat + endLat) / 2;
     const midLng = (startLng + endLng) / 2;
     const radius = calculateDistance([startLat, startLng], [endLat, endLng]) * 1.5;
     
+    console.log(`Searching for accessible waypoints in radius: ${radius}m`);
+    
     // Fetch accessible places that could serve as waypoints
     const accessiblePlaces = await fetchAccessiblePlaces(midLat, midLng, radius);
+    console.log(`Found ${accessiblePlaces.length} potential waypoints`);
     
     // Generate route using A* algorithm with accessibility considerations
     const route = generateAccessibleRoute(
       [startLat, startLng],
       [endLat, endLng],
-      accessiblePlaces
+      accessiblePlaces,
+      profile
     );
     
     // Calculate total distance (in meters)
@@ -280,6 +285,8 @@ export async function fetchRoute(
     
     // Generate steps
     const steps = generateRouteSteps(route, accessiblePlaces);
+    
+    console.log(`Route generated: ${route.length} points, ${distance.toFixed(0)}m, ${steps.length} steps`);
     
     return {
       route,
@@ -300,8 +307,11 @@ export async function fetchRoute(
 function generateAccessibleRoute(
   start: [number, number],
   end: [number, number],
-  accessiblePlaces: Place[] = []
+  accessiblePlaces: Place[] = [],
+  profile: string = 'wheelchair'
 ): Array<[number, number]> {
+  console.log(`Generating accessible route with profile: ${profile}`);
+  
   // Filter places that are roughly along the path
   const potentialWaypoints = accessiblePlaces.filter(place => {
     // Calculate if place is roughly along the path (within a certain deviation)
@@ -314,13 +324,33 @@ function generateAccessibleRoute(
     return detourDistance <= directDistance * 1.2;
   });
   
-  // Sort waypoints by their accessibility features (more features = better)
-  const sortedWaypoints = potentialWaypoints.sort((a, b) => 
-    b.accessibilityFeatures.length - a.accessibilityFeatures.length
-  );
+  console.log(`Found ${potentialWaypoints.length} waypoints along the path`);
   
-  // Take top 2-3 waypoints for a reasonable route
-  const selectedWaypoints = sortedWaypoints.slice(0, Math.min(3, sortedWaypoints.length));
+  // Sort waypoints by their accessibility features (more features = better)
+  const sortedWaypoints = potentialWaypoints.sort((a, b) => {
+    // First prioritize by number of accessibility features
+    const featureDiff = b.accessibilityFeatures.length - a.accessibilityFeatures.length;
+    if (featureDiff !== 0) return featureDiff;
+    
+    // Then by specific features based on profile
+    if (profile === 'wheelchair') {
+      const aHasRamp = a.accessibilityFeatures.some(f => f.toLowerCase().includes('ramp'));
+      const bHasRamp = b.accessibilityFeatures.some(f => f.toLowerCase().includes('ramp'));
+      if (aHasRamp && !bHasRamp) return -1;
+      if (!aHasRamp && bHasRamp) return 1;
+    }
+    
+    // Finally by distance from direct path
+    const directPath = calculateDistance(start, end);
+    const aDeviation = (calculateDistance(start, [a.lat, a.lng]) + calculateDistance([a.lat, a.lng], end)) - directPath;
+    const bDeviation = (calculateDistance(start, [b.lat, b.lng]) + calculateDistance([b.lat, b.lng], end)) - directPath;
+    return aDeviation - bDeviation;
+  });
+  
+  // Take top waypoints for a reasonable route
+  const maxWaypoints = Math.min(5, sortedWaypoints.length);
+  const selectedWaypoints = sortedWaypoints.slice(0, maxWaypoints);
+  console.log(`Selected ${selectedWaypoints.length} waypoints for route`);
   
   // Create initial route with start and end
   const route: Array<[number, number]> = [start];
@@ -354,6 +384,9 @@ function generateAccessibleRoute(
     }
   }
   
+  // Add end point
+  route.push(end);
+  
   // Add intermediate points for a smoother route
   const smoothRoute: Array<[number, number]> = [route[0]];
   
@@ -374,12 +407,6 @@ function generateAccessibleRoute(
     }
     
     smoothRoute.push(route[i+1]);
-  }
-  
-  // Add end point if not already included
-  if (smoothRoute[smoothRoute.length - 1][0] !== end[0] || 
-      smoothRoute[smoothRoute.length - 1][1] !== end[1]) {
-    smoothRoute.push(end);
   }
   
   return smoothRoute;

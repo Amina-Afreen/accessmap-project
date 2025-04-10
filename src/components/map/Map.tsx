@@ -22,6 +22,7 @@ interface MapProps {
   onMapClick?: (lat: number, lng: number) => void;
   showUserLocation?: boolean;
   onPlacesLoaded?: (places: Place[]) => void;
+  onLocationFound?: (location: [number, number]) => void;
 }
 
 export function Map({
@@ -33,6 +34,7 @@ export function Map({
   onMapClick,
   showUserLocation = true,
   onPlacesLoaded,
+  onLocationFound,
 }: MapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -43,6 +45,8 @@ export function Map({
   const voiceAssistant = VoiceAssistant.getInstance();
   const markersRef = useRef<L.Marker[]>([]);
   const routeLayerRef = useRef<L.Polyline | null>(null);
+  const userMarkerRef = useRef<L.Marker | null>(null);
+  const locationWatchId = useRef<number | null>(null);
 
   useEffect(() => {
     // Load OpenStreetMap via Leaflet
@@ -65,34 +69,65 @@ export function Map({
         
         // Get user location if enabled
         if (showUserLocation) {
-          navigator.geolocation.getCurrentPosition(
+          // Try to get high accuracy location
+          const options = {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          };
+          
+          // Start watching position for real-time updates
+          locationWatchId.current = navigator.geolocation.watchPosition(
             (position) => {
               const { latitude, longitude } = position.coords;
-              setUserLocation([latitude, longitude]);
+              const newLocation: [number, number] = [latitude, longitude];
+              setUserLocation(newLocation);
               
-              // Add user marker
-              const userIcon = L.divIcon({
-                html: `<div class="w-4 h-4 bg-blue-500 rounded-full border-2 border-white"></div>`,
-                className: 'user-location-marker',
-                iconSize: [16, 16]
-              });
+              // If this is the first location update, center map and load places
+              if (!userLocation) {
+                map.setView(newLocation, 16);
+                loadNearbyPlaces(latitude, longitude);
+                
+                // Announce location found
+                voiceAssistant.speak("Location found. Map is ready.");
+              }
               
-              L.marker([latitude, longitude], { icon: userIcon }).addTo(map);
+              // Update user marker
+              updateUserLocationMarker(newLocation);
               
-              // Center map on user location
-              map.setView([latitude, longitude], 16);
-              
-              // Load nearby places from Overpass API
-              loadNearbyPlaces(latitude, longitude);
-              
-              // Announce location found
-              voiceAssistant.speak("Location found. Map is ready.");
+              // Notify parent component
+              if (onLocationFound) {
+                onLocationFound(newLocation);
+              }
             },
             (error) => {
-              console.error("Error getting location:", error);
-              toast.error("Could not access your location");
-              voiceAssistant.speak("Could not access your location. Using default location.");
-            }
+              console.error("Error watching location:", error);
+              
+              // Try one-time position as fallback
+              navigator.geolocation.getCurrentPosition(
+                (position) => {
+                  const { latitude, longitude } = position.coords;
+                  const newLocation: [number, number] = [latitude, longitude];
+                  setUserLocation(newLocation);
+                  map.setView(newLocation, 16);
+                  loadNearbyPlaces(latitude, longitude);
+                  updateUserLocationMarker(newLocation);
+                  
+                  if (onLocationFound) {
+                    onLocationFound(newLocation);
+                  }
+                  
+                  voiceAssistant.speak("Location found. Map is ready.");
+                },
+                (error) => {
+                  console.error("Error getting location:", error);
+                  toast.error("Could not access your location. Please check your location permissions.");
+                  voiceAssistant.speak("Could not access your location. Using default location.");
+                },
+                options
+              );
+            },
+            options
           );
         }
         
@@ -119,8 +154,39 @@ export function Map({
         mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
+      
+      // Stop watching position
+      if (locationWatchId.current !== null) {
+        navigator.geolocation.clearWatch(locationWatchId.current);
+      }
     };
   }, []);
+  
+  // Update user location marker
+  const updateUserLocationMarker = (location: [number, number]) => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    
+    // Remove existing user marker
+    if (userMarkerRef.current) {
+      map.removeLayer(userMarkerRef.current);
+    }
+    
+    // Create pulsing icon for better visibility
+    const userIcon = L.divIcon({
+      html: `
+        <div class="relative">
+          <div class="w-4 h-4 bg-blue-500 rounded-full border-2 border-white"></div>
+          <div class="absolute top-0 left-0 w-4 h-4 bg-blue-500 rounded-full border-2 border-white animate-ping opacity-75"></div>
+        </div>
+      `,
+      className: 'user-location-marker',
+      iconSize: [16, 16]
+    });
+    
+    // Add new user marker
+    userMarkerRef.current = L.marker(location, { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
+  };
   
   // Load nearby places from Overpass API
   const loadNearbyPlaces = async (lat: number, lng: number) => {
@@ -161,10 +227,31 @@ export function Map({
     markersRef.current = [];
     
     places.forEach(place => {
+      // Create custom icon based on place type
+      let iconHtml = '';
+      
+      switch(place.placeType) {
+        case 'hospital':
+          iconHtml = `<div class="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🏥</div>`;
+          break;
+        case 'restaurant':
+          iconHtml = `<div class="w-6 h-6 bg-orange-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🍽️</div>`;
+          break;
+        case 'education':
+          iconHtml = `<div class="w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🎓</div>`;
+          break;
+        case 'transport':
+          iconHtml = `<div class="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🚆</div>`;
+          break;
+        case 'shopping':
+          iconHtml = `<div class="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🛒</div>`;
+          break;
+        default:
+          iconHtml = `<div class="w-6 h-6 bg-gray-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">📍</div>`;
+      }
+      
       const icon = L.divIcon({
-        html: `<div class="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">
-                ${place.placeType === 'hospital' ? '🏥' : place.placeType === 'restaurant' ? '🍽️' : place.placeType === 'education' ? '🎓' : '📍'}
-              </div>`,
+        html: iconHtml,
         className: 'custom-marker',
         iconSize: [24, 24]
       });
@@ -189,28 +276,37 @@ export function Map({
     if (!map) return;
     
     try {
-      // Clear existing markers
+      // Clear existing markers except user location
       markersRef.current.forEach(marker => map.removeLayer(marker));
       markersRef.current = [];
       
-      // Add user location marker back if available
-      if (userLocation) {
-        const userIcon = L.divIcon({
-          html: `<div class="w-4 h-4 bg-blue-500 rounded-full border-2 border-white"></div>`,
-          className: 'user-location-marker',
-          iconSize: [16, 16]
-        });
-        
-        const userMarker = L.marker(userLocation, { icon: userIcon }).addTo(map);
-        markersRef.current.push(userMarker);
-      }
-      
       // Add new markers
       markers.forEach((marker) => {
+        // Create custom icon based on place type
+        let iconHtml = '';
+        
+        switch(marker.type) {
+          case 'hospital':
+            iconHtml = `<div class="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🏥</div>`;
+            break;
+          case 'restaurant':
+            iconHtml = `<div class="w-6 h-6 bg-orange-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🍽️</div>`;
+            break;
+          case 'education':
+            iconHtml = `<div class="w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🎓</div>`;
+            break;
+          case 'transport':
+            iconHtml = `<div class="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🚆</div>`;
+            break;
+          case 'shopping':
+            iconHtml = `<div class="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">🛒</div>`;
+            break;
+          default:
+            iconHtml = `<div class="w-6 h-6 bg-gray-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">📍</div>`;
+        }
+        
         const icon = L.divIcon({
-          html: `<div class="w-6 h-6 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white">
-                  ${marker.type === 'hospital' ? '🏥' : marker.type === 'restaurant' ? '🍽️' : marker.type === 'education' ? '🎓' : '📍'}
-                </div>`,
+          html: iconHtml,
           className: 'custom-marker',
           iconSize: [24, 24]
         });
@@ -230,7 +326,7 @@ export function Map({
     } catch (error) {
       console.error("Error updating markers:", error);
     }
-  }, [markers, userLocation]);
+  }, [markers]);
   
   // Update route when it changes
   useEffect(() => {
@@ -300,22 +396,39 @@ export function Map({
   // Center on user location
   const handleCenterOnUser = () => {
     if (!userLocation) {
+      // Request high accuracy location
+      const options = {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
+      };
+      
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const { latitude, longitude } = position.coords;
-          setUserLocation([latitude, longitude]);
+          const newLocation: [number, number] = [latitude, longitude];
+          setUserLocation(newLocation);
+          
           if (mapInstanceRef.current) {
-            mapInstanceRef.current.setView([latitude, longitude], 16);
+            mapInstanceRef.current.setView(newLocation, 16);
           }
+          
+          updateUserLocationMarker(newLocation);
           
           // Load nearby places
           loadNearbyPlaces(latitude, longitude);
+          
+          // Notify parent component
+          if (onLocationFound) {
+            onLocationFound(newLocation);
+          }
         },
         (error) => {
           console.error("Error getting location:", error);
-          toast.error("Could not access your location");
+          toast.error("Could not access your location. Please check your location permissions.");
           voiceAssistant.speak("Could not access your location");
-        }
+        },
+        options
       );
     } else if (mapInstanceRef.current) {
       mapInstanceRef.current.setView(userLocation, 16);

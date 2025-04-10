@@ -12,6 +12,7 @@ interface NearbyPlacesProps {
   maxDistance?: number; // in km
   limit?: number;
   places?: Place[];
+  isLoading?: boolean;
 }
 
 export function NearbyPlaces({
@@ -19,6 +20,7 @@ export function NearbyPlaces({
   maxDistance = 5,
   limit = 10,
   places: initialPlaces,
+  isLoading: externalLoading = false,
 }: NearbyPlacesProps) {
   const [places, setPlaces] = useState<Place[]>([]);
   const [filteredPlaces, setFilteredPlaces] = useState<Place[]>([]);
@@ -29,6 +31,7 @@ export function NearbyPlaces({
   useEffect(() => {
     // If places are provided as props, use them
     if (initialPlaces && initialPlaces.length > 0) {
+      console.log(`NearbyPlaces: Received ${initialPlaces.length} places from props`);
       setPlaces(initialPlaces);
       setFilteredPlaces(initialPlaces);
       setIsLoading(false);
@@ -40,10 +43,12 @@ export function NearbyPlaces({
         setIsLoading(true);
         
         if (userLocation) {
+          console.log(`NearbyPlaces: Fetching places near [${userLocation[0]}, ${userLocation[1]}]`);
           // Fetch places from Overpass API
           const fetchedPlaces = await fetchAccessiblePlaces(userLocation[0], userLocation[1], 2000);
           
           if (fetchedPlaces.length > 0) {
+            console.log(`NearbyPlaces: Found ${fetchedPlaces.length} places from Overpass API`);
             // Calculate distance for each place
             const placesWithDistance = fetchedPlaces.map(place => {
               const distance = calculateDistance(
@@ -68,10 +73,12 @@ export function NearbyPlaces({
             // Announce places found
             voiceAssistant.speak(`Found ${placesWithDistance.length} nearby places`);
           } else {
+            console.log("NearbyPlaces: No places found from Overpass API, falling back to database");
             // Fallback to database if no places found via Overpass
             const dbPlaces = await fine.table("places").select();
             
             if (dbPlaces && dbPlaces.length > 0) {
+              console.log(`NearbyPlaces: Found ${dbPlaces.length} places from database`);
               // Calculate distance for each place
               const placesWithDistance = dbPlaces.map(place => {
                 const distance = calculateDistance(
@@ -109,10 +116,12 @@ export function NearbyPlaces({
             }
           }
         } else {
+          console.log("NearbyPlaces: No user location, fetching from database");
           // If no user location, just fetch from database
           const dbPlaces = await fine.table("places").select();
           
           if (dbPlaces && dbPlaces.length > 0) {
+            console.log(`NearbyPlaces: Found ${dbPlaces.length} places from database`);
             // Convert database places to Place format
             const formattedPlaces = dbPlaces.map(place => {
               const accessibilityFeatures = typeof place.accessibilityFeatures === 'string' 
@@ -131,7 +140,7 @@ export function NearbyPlaces({
                 website: place.website || undefined,
                 rating: place.rating || undefined
               } as Place;
-            });
+            }).slice(0, limit);
             
             setPlaces(formattedPlaces);
             setFilteredPlaces(formattedPlaces);
@@ -189,7 +198,7 @@ export function NearbyPlaces({
         </TabsList>
       </Tabs>
       
-      {isLoading ? (
+      {isLoading || externalLoading ? (
         <div className="flex justify-center py-8">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
         </div>

@@ -18,6 +18,7 @@ const Index = () => {
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [places, setPlaces] = useState<Place[]>([]);
   const [showNearby, setShowNearby] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();
   const voiceAssistant = VoiceAssistant.getInstance();
 
@@ -39,22 +40,49 @@ const Index = () => {
       },
       (error) => {
         console.error("Error getting location:", error);
-        toast.error("Could not access your location");
+        toast.error("Could not access your location. Please check your location permissions.");
         voiceAssistant.speak("Could not access your location. Some features may be limited.");
         
         // Fallback to database
         fetchPlacesFromDatabase();
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0
       }
     );
   }, []);
 
   const fetchNearbyPlaces = async (latitude: number, longitude: number) => {
     try {
+      setIsLoading(true);
+      console.log(`Fetching nearby places at [${latitude}, ${longitude}]`);
       const fetchedPlaces = await fetchAccessiblePlaces(latitude, longitude, 2000);
+      
       if (fetchedPlaces && fetchedPlaces.length > 0) {
-        setPlaces(fetchedPlaces);
-        voiceAssistant.speak(`Found ${fetchedPlaces.length} accessible places nearby.`);
+        console.log(`Found ${fetchedPlaces.length} places from Overpass API`);
+        
+        // Calculate distance for each place
+        const placesWithDistance = fetchedPlaces.map(place => {
+          const distance = calculateDistance(
+            latitude,
+            longitude,
+            place.lat,
+            place.lng
+          );
+          
+          return {
+            ...place,
+            distance,
+            distanceText: `${distance.toFixed(1)} km away`
+          };
+        }).sort((a, b) => (a.distance || 0) - (b.distance || 0));
+        
+        setPlaces(placesWithDistance);
+        voiceAssistant.speak(`Found ${placesWithDistance.length} accessible places nearby.`);
       } else {
+        console.log("No places found from Overpass API, falling back to database");
         // Fallback to database
         fetchPlacesFromDatabase();
       }
@@ -62,33 +90,64 @@ const Index = () => {
       console.error("Error fetching places from Overpass API:", error);
       // Fallback to database
       fetchPlacesFromDatabase();
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const fetchPlacesFromDatabase = async () => {
     try {
+      setIsLoading(true);
       const fetchedPlaces = await fine.table("places").select();
+      
       if (fetchedPlaces && fetchedPlaces.length > 0) {
+        console.log(`Found ${fetchedPlaces.length} places from database`);
+        
         // Convert database places to Place format
-        const formattedPlaces = fetchedPlaces.map(place => ({
-          id: place.id!,
-          name: place.name,
-          lat: place.lat,
-          lng: place.lng,
-          address: place.address,
-          placeType: place.placeType,
-          accessibilityFeatures: typeof place.accessibilityFeatures === 'string' 
-            ? JSON.parse(place.accessibilityFeatures) 
-            : place.accessibilityFeatures,
-          phone: place.phone || undefined,
-          website: place.website || undefined,
-          rating: place.rating || undefined
-        }));
+        const formattedPlaces = fetchedPlaces.map(place => {
+          // Calculate distance if user location is available
+          let distance = undefined;
+          let distanceText = undefined;
+          
+          if (userLocation) {
+            distance = calculateDistance(
+              userLocation[0],
+              userLocation[1],
+              place.lat,
+              place.lng
+            );
+            distanceText = `${distance.toFixed(1)} km away`;
+          }
+          
+          return {
+            id: place.id!,
+            name: place.name,
+            lat: place.lat,
+            lng: place.lng,
+            address: place.address,
+            placeType: place.placeType,
+            accessibilityFeatures: typeof place.accessibilityFeatures === 'string' 
+              ? JSON.parse(place.accessibilityFeatures) 
+              : place.accessibilityFeatures,
+            phone: place.phone || undefined,
+            website: place.website || undefined,
+            rating: place.rating || undefined,
+            distance,
+            distanceText
+          };
+        }).sort((a, b) => (a.distance || 0) - (b.distance || 0));
         
         setPlaces(formattedPlaces);
+        voiceAssistant.speak(`Found ${formattedPlaces.length} accessible places.`);
+      } else {
+        toast.error("No places found. Please try a different location.");
+        voiceAssistant.speak("No accessible places found.");
       }
     } catch (error) {
       console.error("Error fetching places from database:", error);
+      toast.error("Error loading places");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -105,11 +164,78 @@ const Index = () => {
   };
 
   const handlePlacesLoaded = (loadedPlaces: Place[]) => {
-    setPlaces(loadedPlaces);
+    if (loadedPlaces.length > 0) {
+      console.log(`Received ${loadedPlaces.length} places from Map component`);
+      
+      // Calculate distance if user location is available
+      if (userLocation) {
+        const placesWithDistance = loadedPlaces.map(place => {
+          const distance = calculateDistance(
+            userLocation[0],
+            userLocation[1],
+            place.lat,
+            place.lng
+          );
+          
+          return {
+            ...place,
+            distance,
+            distanceText: `${distance.toFixed(1)} km away`
+          };
+        }).sort((a, b) => (a.distance || 0) - (b.distance || 0));
+        
+        setPlaces(placesWithDistance);
+      } else {
+        setPlaces(loadedPlaces);
+      }
+    }
   };
 
   const handleSearch = (query: string) => {
     navigate(`/search?q=${encodeURIComponent(query)}`);
+  };
+
+  const handleLocationFound = (location: [number, number]) => {
+    console.log(`Location found: [${location[0]}, ${location[1]}]`);
+    setUserLocation(location);
+    
+    // Update distances for places
+    if (places.length > 0) {
+      const updatedPlaces = places.map(place => {
+        const distance = calculateDistance(
+          location[0],
+          location[1],
+          place.lat,
+          place.lng
+        );
+        
+        return {
+          ...place,
+          distance,
+          distanceText: `${distance.toFixed(1)} km away`
+        };
+      }).sort((a, b) => (a.distance || 0) - (b.distance || 0));
+      
+      setPlaces(updatedPlaces);
+    }
+  };
+
+  // Calculate distance between two points in km using Haversine formula
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371; // Radius of the earth in km
+    const dLat = deg2rad(lat2 - lat1);
+    const dLon = deg2rad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const d = R * c; // Distance in km
+    return d;
+  };
+  
+  const deg2rad = (deg: number) => {
+    return deg * (Math.PI / 180);
   };
 
   return (
@@ -137,6 +263,7 @@ const Index = () => {
           onMarkerClick={handleMarkerClick}
           showUserLocation={true}
           onPlacesLoaded={handlePlacesLoaded}
+          onLocationFound={handleLocationFound}
         />
         
         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex space-x-2">
@@ -163,7 +290,11 @@ const Index = () => {
           <div className="absolute bottom-16 left-0 right-0 bg-white dark:bg-gray-900 rounded-t-xl shadow-lg max-h-[60vh] overflow-y-auto">
             <div className="p-4">
               <h2 className="text-xl font-bold mb-4">Nearby Places</h2>
-              <NearbyPlaces userLocation={userLocation || undefined} places={places} />
+              <NearbyPlaces 
+                userLocation={userLocation || undefined} 
+                places={places}
+                isLoading={isLoading}
+              />
             </div>
           </div>
         )}

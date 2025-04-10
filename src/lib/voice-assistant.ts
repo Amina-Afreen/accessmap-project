@@ -43,6 +43,7 @@ export class VoiceAssistant {
     voice: ''
   };
   private commandCallbacks: Map<string, (args?: string) => void> = new Map();
+  private currentUtterance: SpeechSynthesisUtterance | null = null;
 
   private constructor() {
     if (typeof window !== 'undefined') {
@@ -58,6 +59,7 @@ export class VoiceAssistant {
         
         this.recognition.onresult = (event: any) => {
           const transcript = event.results[0][0].transcript.toLowerCase().trim();
+          console.log("Voice command received:", transcript);
           this.processCommand(transcript);
         };
         
@@ -68,9 +70,17 @@ export class VoiceAssistant {
         this.recognition.onend = () => {
           if (this.isListening) {
             // Restart recognition if it's supposed to be listening
-            this.recognition?.start();
+            setTimeout(() => {
+              try {
+                this.recognition?.start();
+              } catch (error) {
+                console.error("Error restarting speech recognition:", error);
+              }
+            }, 500);
           }
         };
+      } else {
+        console.warn("Speech recognition not supported in this browser");
       }
     }
   }
@@ -87,13 +97,17 @@ export class VoiceAssistant {
   }
 
   public speak(text: string, immediate: boolean = false): void {
-    if (!this.synthesis) return;
+    if (!this.synthesis) {
+      console.warn("Speech synthesis not available");
+      return;
+    }
     
     // Cancel current speech if immediate
     if (immediate && this.synthesis.speaking) {
       this.synthesis.cancel();
     }
     
+    // Create new utterance
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = this.options.rate || 1;
     utterance.pitch = this.options.pitch || 1;
@@ -108,13 +122,22 @@ export class VoiceAssistant {
       }
     }
     
+    // Store current utterance for potential cancellation
+    this.currentUtterance = utterance;
+    
+    // Speak the text
+    console.log("Speaking:", text);
     this.synthesis.speak(utterance);
   }
 
   public startListening(): boolean {
-    if (!this.recognition) return false;
+    if (!this.recognition) {
+      console.warn("Speech recognition not available");
+      return false;
+    }
     
     try {
+      console.log("Starting speech recognition");
       this.recognition.start();
       this.isListening = true;
       return true;
@@ -128,6 +151,7 @@ export class VoiceAssistant {
     if (!this.recognition) return;
     
     try {
+      console.log("Stopping speech recognition");
       this.recognition.stop();
       this.isListening = false;
     } catch (error) {
@@ -136,10 +160,12 @@ export class VoiceAssistant {
   }
 
   public registerCommand(command: string, callback: (args?: string) => void): void {
+    console.log(`Registering command: "${command}"`);
     this.commandCallbacks.set(command.toLowerCase(), callback);
   }
 
   public unregisterCommand(command: string): void {
+    console.log(`Unregistering command: "${command}"`);
     this.commandCallbacks.delete(command.toLowerCase());
   }
 
@@ -149,6 +175,7 @@ export class VoiceAssistant {
     // Check for exact command matches
     for (const [command, callback] of this.commandCallbacks.entries()) {
       if (transcript === command) {
+        console.log(`Executing exact command: "${command}"`);
         callback();
         return;
       }
@@ -156,8 +183,9 @@ export class VoiceAssistant {
     
     // Check for commands with arguments
     for (const [command, callback] of this.commandCallbacks.entries()) {
-      if (transcript.startsWith(command + ' ')) {
+      if (command !== '*' && transcript.startsWith(command + ' ')) {
         const args = transcript.substring(command.length).trim();
+        console.log(`Executing command with args: "${command}" with args "${args}"`);
         callback(args);
         return;
       }
@@ -166,17 +194,20 @@ export class VoiceAssistant {
     // Check for commands contained within the transcript
     for (const [command, callback] of this.commandCallbacks.entries()) {
       if (command === '*') {
+        console.log(`Executing wildcard command with transcript: "${transcript}"`);
         callback(transcript);
         return;
       }
       
       if (transcript.includes(command)) {
+        console.log(`Executing partial match command: "${command}"`);
         callback();
         return;
       }
     }
     
     // No command matched
+    console.log("No command matched for transcript:", transcript);
     this.speak("I didn't understand that command. Please try again.");
   }
 
@@ -203,26 +234,53 @@ export class VoiceAssistant {
 
 // Helper functions for common voice commands
 export function setupNavigationVoiceCommands(voiceAssistant: VoiceAssistant, navigate: (path: string) => void): void {
-  voiceAssistant.registerCommand('go to map', () => navigate('/'));
-  voiceAssistant.registerCommand('show map', () => navigate('/'));
-  voiceAssistant.registerCommand('go to profile', () => navigate('/profile'));
-  voiceAssistant.registerCommand('show profile', () => navigate('/profile'));
-  voiceAssistant.registerCommand('add place', () => navigate('/add-place'));
+  console.log("Setting up navigation voice commands");
+  
+  voiceAssistant.registerCommand('go to map', () => {
+    console.log("Voice command: go to map");
+    navigate('/');
+  });
+  
+  voiceAssistant.registerCommand('show map', () => {
+    console.log("Voice command: show map");
+    navigate('/');
+  });
+  
+  voiceAssistant.registerCommand('go to profile', () => {
+    console.log("Voice command: go to profile");
+    navigate('/profile');
+  });
+  
+  voiceAssistant.registerCommand('show profile', () => {
+    console.log("Voice command: show profile");
+    navigate('/profile');
+  });
+  
+  voiceAssistant.registerCommand('add place', () => {
+    console.log("Voice command: add place");
+    navigate('/add-place');
+  });
+  
   voiceAssistant.registerCommand('search', (query) => {
+    console.log(`Voice command: search for "${query}"`);
     if (query) {
       navigate(`/search?q=${encodeURIComponent(query)}`);
     } else {
       voiceAssistant.speak('What would you like to search for?');
     }
   });
+  
   voiceAssistant.registerCommand('find', (query) => {
+    console.log(`Voice command: find "${query}"`);
     if (query) {
       navigate(`/search?q=${encodeURIComponent(query)}`);
     } else {
       voiceAssistant.speak('What would you like to find?');
     }
   });
+  
   voiceAssistant.registerCommand('navigate to', (destination) => {
+    console.log(`Voice command: navigate to "${destination}"`);
     if (destination) {
       navigate(`/search?q=${encodeURIComponent(destination)}`);
       voiceAssistant.speak(`Searching for ${destination}`);
@@ -230,8 +288,14 @@ export function setupNavigationVoiceCommands(voiceAssistant: VoiceAssistant, nav
       voiceAssistant.speak('Where would you like to navigate to?');
     }
   });
-  voiceAssistant.registerCommand('go back', () => window.history.back());
+  
+  voiceAssistant.registerCommand('go back', () => {
+    console.log("Voice command: go back");
+    window.history.back();
+  });
+  
   voiceAssistant.registerCommand('help', () => {
+    console.log("Voice command: help");
     voiceAssistant.speak(
       'Available commands: go to map, go to profile, add place, search, find, navigate to, go back, help'
     );
